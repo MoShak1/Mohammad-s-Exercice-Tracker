@@ -1,117 +1,209 @@
 const express = require('express')
 const app = express()
-const cors = require('cors')
-const mongoose = require('mongoose');
-const ObjectId = require('mongoose').Types.ObjectId;
-const { Schema } = mongoose
-const bodyParser = require('body-parser');
-require('dotenv').config()
+const bodyParser = require('body-parser')
 
-app.use(bodyParser.urlencoded({ extended: false }))
-app.use(bodyParser.json())
+const cors = require('cors')
+
+const mongoose = require('mongoose')
+mongoose.connect(process.env.DB_URI, { useNewUrlParser: true })
+
+var Schema = mongoose.Schema
+var userSchema = new Schema({
+  userName: String
+})
+var logSchema = new Schema({
+  userId: String,
+  description: String,
+  duration: Number,
+  date: Date
+})
+
+var User = mongoose.model('User', userSchema)
+var UserLog = mongoose.model('UserLog', logSchema)
+var ObjectId = mongoose.Types.ObjectId
+
 app.use(cors())
+
+app.use(bodyParser.urlencoded({extended: false}))
+app.use(bodyParser.json())
+
+
 app.use(express.static('public'))
 app.get('/', (req, res) => {
-    res.sendFile(__dirname + '/views/index.html')
+  res.sendFile(__dirname + '/views/index.html')
 });
 
-main().catch(err => console.log(err))
 
-async function main() {
-    await mongoose.connect(process.env.DB_URI)
-}
+// Not found middleware
+// app.use((req, res, next) => {
+//  return next({status: 404, message: 'not found'})
+// })
 
-const userSchema = new Schema({
-    username: { type: String, require: true, unique: true },
-    exercises: [{
-        description: String,
-        duration: Number,
-        date: Date
-    }]
-}, { versionKey: false })
+// Error Handling middleware
+app.use((err, req, res, next) => {
+  let errCode, errMessage
 
-const User = mongoose.model('User', userSchema)
-const ERROR = { error: "There was an error while getting the users." };
-
-app.get('/api/users', (req, res) => {
-    User.find({}, (err, data) => {
-        if (err) return res.send(ERROR)
-        res.json(data)
-    })
+  if (err.errors) {
+    // mongoose validation error
+    errCode = 400 // bad request
+    const keys = Object.keys(err.errors)
+    // report the first validation error
+    errMessage = err.errors[keys[0]].message
+  } else {
+    // generic or custom error
+    errCode = err.status || 500
+    errMessage = err.message || 'Internal Server Error'
+  }
+  res.status(errCode).type('txt')
+    .send(errMessage)
 })
 
-app.get('/api/users/:id/logs', (req, res) => {
-    const id = req.params.id;
-    const dateFrom = new Date(req.query.from);
-    const dateTo = new Date(req.query.to);
-    const limit = parseInt(req.query.limit);
-
-    User.findOne({ _id: new ObjectId(id) }, (err, data) => {
-        if (err) return res.send(ERROR)
-
-        let log = [];
-
-        data.exercises.filter(exercise =>
-            new Date(Date.parse(exercise.date)).getTime() > dateFrom
-            && new Date(Date.parse(exercise.date)).getTime() < dateTo
-        )
-
-        for (const exercise of data.exercises) {
-            log.push({
-                description: exercise.description,
-                duration: exercise.duration,
-                date: new Date(exercise.date).toDateString()
-            })
+//FCC Project
+app.post('/api/exercise/new-user', function(req, res) {
+  console.log('test')
+  User.findOne({userName: req.body.username}, function(err, data) {
+    if (err) {
+      return res.send('error, unable to search database')
+    }
+    else if (data == null) {
+      var newUser = new User ({userName: req.body.username})
+      newUser.save(function(err) {
+        if (err) {
+          return res.send('error, unable to save record')
         }
-
-        if (limit) log = log.slice(0, limit)
-
-        res.json({
-            _id: data._id,
-            username: data.username,
-            count: log.length,
-            log: log
-        })
-    })
+        else {
+          User.findOne({userName: req.body.username}, function(err, data) {
+            if (err) {
+              return res.send('error')
+            }
+            return res.send({ID: data._id, Username: data.userName})
+          })
+        }
+      })
+    }
+    else {
+      return res.send('username already taken')
+    }
+  })
 })
 
-app.post('/api/users', (req, res) => {
-    const username = req.body.username;
-    User.create({ username: username }, (err, data) => {
-            if (err) return res.send(ERROR)
-            res.json({ _id: data._id, username: data.username })
+app.post('/api/exercise/add', function(req, res) {
+  if (req.body.description == '') {
+    return res.send('description is required')
+  }
+  if (req.body.duration == '') {
+    return res.send('duration is required')
+  }
+  if (!ObjectId.isValid(req.body.userId)) {
+    return res.send('invalid id')
+  }
+  User.findById(req.body.userId, function(err, data) {
+    if (err) {
+      return res.send('error')
+    }
+    else if (data == null) {
+      return res.send('user does not exist')
+    }
+    else {
+      UserLog.findOne({userId: req.body.userId,
+                    description: req.body.description,
+                    duration: req.body.duration,
+                    date: req.body.date}, function(err, data) {
+        if (err) {
+          return res.send('error, unable to search database')
         }
-    )
+        else if (data == null) {
+          var actualDate;
+          if (req.body.date == '') {
+            actualDate = new Date()
+          }
+          else {
+            actualDate = new Date(req.body.date)
+          }
+          var newUserLog = new UserLog({userId: req.body.userId,
+                                        description: req.body.description,
+                                        duration: req.body.duration,
+                                        date: actualDate})
+          newUserLog.save(function(err) {
+            if (err) {
+              return res.send('error, unable to save record')
+            }
+            else {
+              User.findOne({_id: req.body.userId}, function(err, data) {
+                return res.send({userName: data.userName,
+                               userId: req.body.userId,
+                               description: req.body.description,
+                               duration: req.body.duration,
+                               date: actualDate.toUTCString().slice(0,16)})
+              })
+            }
+          })
+        }
+        else {
+          return res.send('log already exists')
+        }
+      })
+    }
+  })
 })
 
-app.post('/api/users/:id/exercises', (req, res) => {
-    const id = req.params.id;
-    let { description, duration, date } = req.body;
+app.get('/api/exercise/users', function(req, res) {
+  User.find({}, function(err, data) {
+    return res.send(data)
+  })
+})
 
-    const newExercise = {
-        description: description,
-        duration: duration,
-        date: date ? new Date(date).toDateString() : new Date().toDateString()
-    };
-
-    User.findOne({ _id: new ObjectId(id) }, (err, data) => {
-            if (err) return res.send(ERROR)
-            data.exercises.push(newExercise);
-            data.save((err, data) => {
-                const response = {
-                    username: data.username,
-                    description: data.exercises[data.exercises.length - 1].description,
-                    duration: data.exercises[data.exercises.length - 1].duration,
-                    date: new Date(data.exercises[data.exercises.length - 1].date).toDateString(),
-                    _id: data._id
-                };
-
-                res.json(response)
-            })
-        }
-    )
+app.get('/api/exercise/log?', function(req, res) {
+  User.findById(req.query.userId, function(err, data) {
+    if (err) {
+      return res.send('error')
+    }
+    else if (data != null) {
+      var username = data.userName
+      var fromDate = new Date(req.query.from) //'Invalid Date' if not date format
+      var toDate = new Date(req.query.to)     //'Invalid Date' if not date format
+      var limit = parseInt(req.query.limit)   //Nan if not integer
+      
+      if (fromDate == 'Invalid Date') {
+        fromDate = -8640000000000000
+        var fromBool = true
+      }
+      if (toDate == 'Invalid Date') {
+        toDate = 8640000000000000
+        var toBool = true
+      }
+      // console.log(fromDate, toDate)
+      UserLog.find({userId: req.query.userId})
+             .where('date').gt(fromDate).lt(toDate)
+             .limit((limit == NaN) ? '':limit)
+             .sort('-date')
+             .exec(function(err, data) {
+                    console.log(data)
+                    if (err) {
+                      return res.send('error')
+                    }
+                    else {
+                      var logArr = []
+                      for (let i = 0; i < data.length; i++) {
+                        logArr.push({description: data[i].description,
+                                     duration: data[i].duration,
+                                     date: data[i].date.toUTCString().slice(0, 16)})
+                      }
+                      return res.send({_id: req.query.userId,
+                                       username: username,
+                                       from: ((fromBool)?'NA':fromDate.toUTCString().slice(0,16)),
+                                       to: ((toBool)?'NA':toDate.toUTCString().slice(0,16)),
+                                       count: data.length,
+                                       log: [...logArr]})
+                    }
+                  })
+    }
+    else {
+      return res.send('invalid id')
+    }
+  })
 })
 
 const listener = app.listen(process.env.PORT || 3000, () => {
-    console.log('Your app is listening on port ' + listener.address().port)
+  console.log('Your app is listening on port ' + listener.address().port)
 })
